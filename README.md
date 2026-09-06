@@ -1,17 +1,29 @@
 # Docker Scout AI-BOM
 
-Turns a **Docker Scout SBOM into an AI-BOM**.
+Discovers the **AI composition** of a container image or of the models managed by
+Docker Model Runner, and emits it as a CycloneDX **AI-BOM**.
 
-`docker scout sbom` enumerates OS and language packages. This tool takes that CycloneDX output as the software baseline, scans the image filesystem for AI artefacts, and adds them as CycloneDX `machine-learning-model` / `data` components — one merged AI-BOM that extends the SBOM.
+A traditional SBOM inventories software packages and dependencies. An AI-BOM
+inventories the **AI components** those packages don't capture: models,
+frameworks, agents, and MCP servers. This is about **composition and inventory**
+— *what AI is in here?* — for provenance, licensing, and governance (e.g. EU AI
+Act evidence). It is **not** a vulnerability scanner.
 
-## How it works
+It surfaces components no one registered — models baked into an image, `agents.yaml`
+shipped inside a dependency, MCP servers declared in a config — that manual
+inventories miss.
 
-1. Runs `docker scout sbom --format cyclonedx <image>` for the software baseline.
-2. Flattens the image (`docker create` + `docker export`) and walks the tar stream.
-3. Classifies AI artefacts:
-   - **Models**: `.safetensors`, `.gguf`, `.onnx`, `.pt/.pth`, `.h5`, `.pb`, `.tflite`, `.mlmodel`, `.ckpt`, `.npz`, `config.json`, `tokenizer.json`, …
-   - **Datasets**: `.parquet`, `.arrow`, `.tfrecord`, `.feather`, `dataset_info.json`, …
-4. Emits the merged AI-BOM with SHA-256, path, and size for each artefact.
+## What it discovers
+
+| Category | Source |
+|----------|--------|
+| **Models** | Docker Model Runner artefacts (GGUF); weight files baked into an image (`.gguf`, `.safetensors`, `.onnx`, `.pt/.pth`, `.h5`, `.ckpt`, `.npz`, …) |
+| **Datasets** | `.parquet`, `.arrow`, `.tfrecord`, `.feather`, `dataset_info.json`, … |
+| **Frameworks** | AI libraries among the SBOM packages (`torch`, `transformers`, `langchain`, `crewai`, `openai`, `anthropic`, `mcp`, …) |
+| **Agents** | Agent configuration files (`crew.yaml`, `agents.yaml`, `langgraph.json`, …) |
+| **MCP servers** | Servers declared in `.mcp.json` / `claude_desktop_config.json` |
+
+Every component is tagged with an `aibom:category` property.
 
 ## Build
 
@@ -21,28 +33,42 @@ go build -o aibom-scout .
 
 ## Usage
 
-Flags come before the image argument:
+Two modes. Flags come before positional arguments.
 
 ```sh
-./aibom-scout -o aibom.cdx.json myorg/my-model-image:latest
+# AI composition of a container image (Docker Scout SBOM + AI discovery)
+./aibom-scout image -o aibom.cdx.json myorg/my-app:latest
+
+# Docker Model Runner artefacts — all local models, or a single one
+./aibom-scout model -o models.cdx.json
+./aibom-scout model -o smollm2.cdx.json smollm2
 ```
 
-| Flag | Default | Purpose |
-|------|---------|---------|
-| `-o` | stdout | write the merged AI-BOM here |
-| `-max-hash-bytes` | 512 MiB | skip SHA-256 for files larger than this (`0` = always hash) |
+| Flag | Mode | Default | Purpose |
+|------|------|---------|---------|
+| `-o` | both | stdout | write the AI-BOM here |
+| `-max-hash-bytes` | image | 512 MiB | skip SHA-256 for files larger than this (`0` = always hash) |
 
 ## Example
 
 ```
-AI-BOM: 17 software + 4 AI components
+$ ./aibom-scout image myorg/my-app:latest
+AI-BOM: 6 models, 5 datasets, 8 frameworks, 3 agents, 2 MCP servers
 ```
 
+Docker Model Runner models become CycloneDX `machine-learning-model` components
+with a model card (architecture) and format/quantization/parameters metadata:
+
 ```json
-[
-  { "type": "machine-learning-model", "name": "model.safetensors", "path": "/models/llama/model.safetensors" },
-  { "type": "machine-learning-model", "name": "config.json",       "path": "/models/llama/config.json" },
-  { "type": "data",                   "name": "train.parquet",     "path": "/data/train.parquet" },
-  { "type": "data",                   "name": "dataset_info.json", "path": "/data/dataset_info.json" }
-]
+{
+  "type": "machine-learning-model",
+  "name": "ai/smollm2",
+  "version": "360M-Q4_K_M",
+  "modelCard": { "modelParameters": { "architectureFamily": "llama" } },
+  "properties": [
+    { "name": "aibom:category", "value": "model" },
+    { "name": "aibom:source",   "value": "docker-model-runner" },
+    { "name": "aibom:format",   "value": "gguf" }
+  ]
+}
 ```
