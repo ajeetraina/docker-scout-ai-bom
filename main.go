@@ -381,16 +381,19 @@ func agentComponent(name string) cdx.Component {
 
 // --- system prompts / prompt templates ---
 
-// promptExts are template/prompt file extensions treated as prompt artefacts,
-// both on their own and inside a prompts/ directory.
+// promptExts are extensions unambiguous enough to flag on their own. Generic
+// template extensions (.jinja/.j2/.tmpl) are deliberately excluded here because
+// they are widely used outside AI (Go text/template, Ansible, Flask, ...); they
+// only count under a prompts/ directory via promptDirExts.
 var promptExts = map[string]bool{
-	".prompt": true, ".jinja": true, ".j2": true, ".tmpl": true,
+	".prompt": true,
 }
 
-// promptDirExts are text extensions counted as prompts only when they live
-// under a prompts/ directory (keeps the heuristic high-signal).
+// promptDirExts are extensions counted as prompts only when they live under a
+// prompts/ directory (keeps the heuristic high-signal).
 var promptDirExts = map[string]bool{
 	".txt": true, ".md": true, ".yaml": true, ".yml": true, ".json": true,
+	".jinja": true, ".j2": true, ".tmpl": true,
 }
 
 // isPromptFile reports whether a path looks like a system prompt or prompt
