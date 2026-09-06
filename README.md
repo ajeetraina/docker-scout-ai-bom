@@ -1,4 +1,4 @@
-# docker-scout-ai-bom
+# Docker Scout AI-BOM
 
 A proof-of-concept that turns a **Docker Scout SBOM into an AI-BOM** (see [`aibom-scout-poc/`](aibom-scout-poc/)).
 
