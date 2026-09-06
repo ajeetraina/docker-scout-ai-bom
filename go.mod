@@ -1,4 +1,4 @@
-module github.com/ajeetraina/aibom-scout-poc
+module github.com/ajeetraina/docker-scout-ai-bom
 
 go 1.26
 

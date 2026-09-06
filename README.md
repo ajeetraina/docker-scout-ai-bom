@@ -1,6 +1,6 @@
 # Docker Scout AI-BOM
 
-A proof-of-concept that turns a **Docker Scout SBOM into an AI-BOM** (see [`aibom-scout-poc/`](aibom-scout-poc/)).
+Turns a **Docker Scout SBOM into an AI-BOM**.
 
 `docker scout sbom` enumerates OS and language packages. This tool takes that CycloneDX output as the software baseline, scans the image filesystem for AI artefacts, and adds them as CycloneDX `machine-learning-model` / `data` components — one merged AI-BOM that extends the SBOM.
 
@@ -16,8 +16,7 @@ A proof-of-concept that turns a **Docker Scout SBOM into an AI-BOM** (see [`aibo
 ## Build
 
 ```sh
-cd aibom-scout-poc
-go build -o aibom-scout-poc .
+go build -o aibom-scout .
 ```
 
 ## Usage
@@ -25,7 +24,7 @@ go build -o aibom-scout-poc .
 Flags come before the image argument:
 
 ```sh
-./aibom-scout-poc -o aibom.cdx.json myorg/my-model-image:latest
+./aibom-scout -o aibom.cdx.json myorg/my-model-image:latest
 ```
 
 | Flag | Default | Purpose |

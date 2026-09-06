@@ -1,7 +1,7 @@
-// Command aibom-scout-poc turns a Docker Scout SBOM into an AI-BOM.
+// Command aibom-scout turns a Docker Scout SBOM into an AI-BOM.
 //
 // Docker Scout's `docker scout sbom` only enumerates OS and language packages;
-// it has no notion of model weights, datasets, or other AI artefacts. This PoC
+// it has no notion of model weights, datasets, or other AI artefacts. This tool
 // closes that gap: it takes Scout's CycloneDX output as the software baseline,
 // scans the image filesystem for AI artefacts, and injects them as first-class
 // CycloneDX `machine-learning-model` / `data` components — producing a single
@@ -9,7 +9,7 @@
 //
 // Usage:
 //
-//	aibom-scout-poc <image[:tag]> [-o out.cdx.json]
+//	aibom-scout <image[:tag]> [-o out.cdx.json]
 package main
 
 import (
@@ -33,7 +33,7 @@ func main() {
 	flag.Parse()
 
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: aibom-scout-poc <image[:tag]> [-o out.cdx.json]")
+		fmt.Fprintln(os.Stderr, "usage: aibom-scout <image[:tag]> [-o out.cdx.json]")
 		os.Exit(2)
 	}
 	image := flag.Arg(0)
@@ -218,7 +218,7 @@ func annotateAIBOM(bom *cdx.BOM, aiCount int) {
 		bom.Metadata = &cdx.Metadata{}
 	}
 	props := []cdx.Property{
-		{Name: "aibom:generator", Value: "aibom-scout-poc"},
+		{Name: "aibom:generator", Value: "aibom-scout"},
 		{Name: "aibom:ai-components", Value: fmt.Sprintf("%d", aiCount)},
 	}
 	if bom.Metadata.Properties != nil {
