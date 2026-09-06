@@ -1,7 +1,7 @@
 # Docker Scout AI-BOM
 
-Discovers the **AI composition** of a container image or of the models managed by
-Docker Model Runner, and emits it as a CycloneDX **AI-BOM**.
+Discovers the **AI composition** of a container image, a source repository, or
+the models managed by Docker Model Runner, and emits it as a CycloneDX **AI-BOM**.
 
 A traditional SBOM inventories software packages and dependencies. An AI-BOM
 inventories the **AI components** those packages don't capture: models,
@@ -36,7 +36,7 @@ go build -o aibom-scout .
 
 ## Usage
 
-Two modes. Flags come before positional arguments.
+Three modes. Flags come before positional arguments.
 
 ```sh
 # AI composition of a container image (Docker Scout SBOM + AI discovery)
@@ -45,11 +45,19 @@ Two modes. Flags come before positional arguments.
 # Docker Model Runner artefacts - all local models, or a single one
 ./aibom-scout model -o models.cdx.json
 ./aibom-scout model -o smollm2.cdx.json smollm2
+
+# AI called by source code - imports and model references in a repo
+./aibom-scout source -o code.cdx.json ./my-repo
 ```
+
+The `source` mode scans `.py`, `.js`, `.ts`, `.jsx`, `.tsx`, `.mjs`, `.cjs`
+files for AI SDK imports (OpenAI, Anthropic, LangChain, CrewAI, MCP, …) and
+model identifiers (`model="gpt-4o"`), skipping `node_modules`, `.venv`, etc.
+Each component records the files it was found in.
 
 | Flag | Mode | Default | Purpose |
 |------|------|---------|---------|
-| `-o` | both | stdout | write the AI-BOM here |
+| `-o` | all | stdout | write the AI-BOM here |
 | `-max-hash-bytes` | image | 512 MiB | skip SHA-256 for files larger than this (`0` = always hash) |
 
 ## Example

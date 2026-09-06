@@ -5,10 +5,11 @@
 // in here?" - models, frameworks, agents, and MCP servers - for inventory,
 // provenance, licensing, and governance. It is not a CVE scanner.
 //
-// Two modes:
+// Three modes:
 //
-//	aibom-scout image <image[:tag]>   # AI composition of a container image
-//	aibom-scout model [model]         # Docker Model Runner artefact(s)
+//	aibom-scout image  <image[:tag]>  # AI composition of a container image
+//	aibom-scout model  [model]        # Docker Model Runner artefact(s)
+//	aibom-scout source [dir]          # AI called by source code in a repo
 //
 // The image mode uses `docker scout sbom` as the software baseline, then
 // discovers AI components the SBOM misses:
@@ -24,6 +25,10 @@
 // The model mode inspects Docker Model Runner artefacts (`docker model
 // inspect` / `list --json`) - GGUF models distributed as OCI artefacts, not
 // container images.
+//
+// The source mode scans a directory tree for AI SDK imports (OpenAI, Anthropic,
+// LangChain, …) and referenced model identifiers, capturing the AI a codebase
+// calls even when nothing is registered.
 package main
 
 import (
@@ -34,9 +39,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -63,6 +71,8 @@ func main() {
 		runImage(os.Args[2:])
 	case "model":
 		runModel(os.Args[2:])
+	case "source":
+		runSource(os.Args[2:])
 	default:
 		usage()
 	}
@@ -70,8 +80,9 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  aibom-scout image <image[:tag]> [-o out.cdx.json]")
-	fmt.Fprintln(os.Stderr, "  aibom-scout model [model]       [-o out.cdx.json]")
+	fmt.Fprintln(os.Stderr, "  aibom-scout image  <image[:tag]> [-o out.cdx.json]")
+	fmt.Fprintln(os.Stderr, "  aibom-scout model  [model]       [-o out.cdx.json]")
+	fmt.Fprintln(os.Stderr, "  aibom-scout source [dir]         [-o out.cdx.json]")
 	os.Exit(2)
 }
 
@@ -138,6 +149,29 @@ func runModel(argv []string) {
 	comps := make([]cdx.Component, 0, len(models))
 	for _, m := range models {
 		comps = append(comps, m.component())
+	}
+	bom := cdx.NewBOM()
+	bom.Components = &comps
+	counts := countCategories(comps)
+	annotate(bom, counts)
+
+	writeBOM(bom, *out)
+	reportCounts(counts)
+}
+
+// runSource discovers the AI called by source code in a directory tree.
+func runSource(argv []string) {
+	fset := flag.NewFlagSet("source", flag.ExitOnError)
+	out := fset.String("o", "", "write AI-BOM here (default: stdout)")
+	fset.Parse(argv)
+	root := "."
+	if fset.NArg() == 1 {
+		root = fset.Arg(0)
+	}
+
+	comps, err := scanSource(root)
+	if err != nil {
+		fatalf("scan source: %v", err)
 	}
 	bom := cdx.NewBOM()
 	bom.Components = &comps
@@ -625,6 +659,241 @@ func splitTag(tags []string) (name, version string) {
 		return ref[:i], ref[i+1:]
 	}
 	return ref, ""
+}
+
+// ---------------------------------------------------------------------------
+// Source code scan (AI called by your code)
+// ---------------------------------------------------------------------------
+
+// modRule maps an imported module to an AI-BOM category and display name. When
+// prefix is true it also matches submodules (token., token/, token-).
+type modRule struct {
+	prefix bool
+	token  string
+	cat    string
+	name   string
+}
+
+// moduleRules are evaluated in order; the first match wins.
+var moduleRules = []modRule{
+	{true, "google.generativeai", catProvider, "Google Gemini"},
+	{true, "google.genai", catProvider, "Google Gemini"},
+	{false, "@google/generative-ai", catProvider, "Google Gemini"},
+	{true, "@google/genai", catProvider, "Google Gemini"},
+	{true, "@ai-sdk/openai", catProvider, "OpenAI"},
+	{true, "@ai-sdk/anthropic", catProvider, "Anthropic"},
+	{true, "openai", catProvider, "OpenAI"},
+	{true, "anthropic", catProvider, "Anthropic"},
+	{true, "@anthropic-ai", catProvider, "Anthropic"},
+	{true, "cohere", catProvider, "Cohere"},
+	{true, "mistralai", catProvider, "Mistral"},
+	{true, "groq", catProvider, "Groq"},
+	{true, "ollama", catProvider, "Ollama"},
+	{true, "langchain", catFramework, "LangChain"},
+	{true, "@langchain", catFramework, "LangChain"},
+	{true, "langgraph", catFramework, "LangGraph"},
+	{true, "llama_index", catFramework, "LlamaIndex"},
+	{false, "llamaindex", catFramework, "LlamaIndex"},
+	{true, "crewai", catFramework, "CrewAI"},
+	{true, "autogen", catFramework, "AutoGen"},
+	{true, "pyautogen", catFramework, "AutoGen"},
+	{true, "transformers", catFramework, "Transformers"},
+	{true, "torch", catFramework, "PyTorch"},
+	{true, "tensorflow", catFramework, "TensorFlow"},
+	{true, "dspy", catFramework, "DSPy"},
+	{true, "haystack", catFramework, "Haystack"},
+	{true, "semantic_kernel", catFramework, "Semantic Kernel"},
+	{true, "smolagents", catFramework, "smolagents"},
+	{true, "litellm", catFramework, "LiteLLM"},
+	{true, "guidance", catFramework, "Guidance"},
+	{true, "@modelcontextprotocol", catFramework, "MCP"},
+	{false, "mcp", catFramework, "MCP"},
+	{true, "ai", catFramework, "Vercel AI SDK"},
+}
+
+func matchModule(mod string) (cat, name string, ok bool) {
+	mod = strings.ToLower(strings.Trim(mod, `'" `))
+	for _, r := range moduleRules {
+		if r.prefix {
+			if mod == r.token ||
+				strings.HasPrefix(mod, r.token+".") ||
+				strings.HasPrefix(mod, r.token+"/") ||
+				strings.HasPrefix(mod, r.token+"-") {
+				return r.cat, r.name, true
+			}
+		} else if mod == r.token {
+			return r.cat, r.name, true
+		}
+	}
+	return "", "", false
+}
+
+// modelPrefixes identify known model identifiers referenced in code.
+var modelPrefixes = []string{
+	"gpt-", "gpt4", "o1", "o1-", "o3", "o3-", "o4", "chatgpt", "text-embedding-",
+	"dall-e", "whisper-", "claude-", "gemini-", "gemma", "mistral-", "mixtral",
+	"codestral", "llama-", "llama3", "llama2", "qwen", "deepseek", "phi-", "phi3",
+	"command-", "command_", "embed-", "nomic-embed", "mxbai-embed",
+}
+
+func isKnownModel(v string) bool {
+	v = strings.ToLower(v)
+	for _, p := range modelPrefixes {
+		if strings.HasPrefix(v, p) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	pyImport   = regexp.MustCompile(`(?m)^\s*(?:from|import)\s+([a-zA-Z0-9_.]+)`)
+	jsFrom     = regexp.MustCompile(`from\s+['"]([^'"]+)['"]`)
+	jsRequire  = regexp.MustCompile(`require\(\s*['"]([^'"]+)['"]\s*\)`)
+	jsBare     = regexp.MustCompile(`import\s+['"]([^'"]+)['"]`)
+	modelRef   = regexp.MustCompile(`(?i)\bmodel["']?\s*[=:]\s*["']([^"']+)["']`)
+	skipDirSet = map[string]bool{
+		"node_modules": true, ".git": true, "vendor": true, "dist": true,
+		"build": true, ".venv": true, "venv": true, "__pycache__": true,
+		".next": true, "target": true, ".idea": true, "site-packages": true,
+		".mypy_cache": true, ".pytest_cache": true,
+	}
+)
+
+func langOf(p string) string {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".py":
+		return "py"
+	case ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs":
+		return "js"
+	}
+	return ""
+}
+
+// scanSource walks a directory tree and discovers AI providers, frameworks, and
+// referenced models from import statements and model identifiers in the code.
+func scanSource(root string) ([]cdx.Component, error) {
+	type key struct{ cat, name string }
+	found := map[key]map[string]bool{}
+	add := func(cat, name, file string) {
+		k := key{cat, name}
+		if found[k] == nil {
+			found[k] = map[string]bool{}
+		}
+		found[k][file] = true
+	}
+
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if skipDirSet[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		lang := langOf(p)
+		if lang == "" {
+			return nil
+		}
+		if info, err := d.Info(); err == nil && info.Size() > 4<<20 {
+			return nil
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		content := string(data)
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil {
+			rel = p
+		}
+
+		if lang == "py" {
+			for _, m := range pyImport.FindAllStringSubmatch(content, -1) {
+				if cat, name, ok := matchModule(m[1]); ok {
+					add(cat, name, rel)
+				}
+			}
+		} else {
+			for _, re := range []*regexp.Regexp{jsFrom, jsRequire, jsBare} {
+				for _, m := range re.FindAllStringSubmatch(content, -1) {
+					if cat, name, ok := matchModule(m[1]); ok {
+						add(cat, name, rel)
+					}
+				}
+			}
+		}
+		for _, m := range modelRef.FindAllStringSubmatch(content, -1) {
+			if isKnownModel(m[1]) {
+				add(catModel, m[1], rel)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make([]key, 0, len(found))
+	for k := range found {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].cat != keys[j].cat {
+			return keys[i].cat < keys[j].cat
+		}
+		return keys[i].name < keys[j].name
+	})
+
+	comps := make([]cdx.Component, 0, len(keys))
+	for _, k := range keys {
+		files := make([]string, 0, len(found[k]))
+		for f := range found[k] {
+			files = append(files, f)
+		}
+		sort.Strings(files)
+		comps = append(comps, sourceComponent(k.cat, k.name, files))
+	}
+	return comps, nil
+}
+
+func sourceComponent(cat, name string, files []string) cdx.Component {
+	ctype := cdx.ComponentTypeApplication
+	if cat == catModel {
+		ctype = cdx.ComponentTypeMachineLearningModel
+	}
+	c := cdx.Component{
+		Type:   ctype,
+		Name:   name,
+		BOMRef: "aibom:src:" + cat + ":" + slug(name),
+	}
+	addProp(&c.Properties, "aibom:category", cat)
+	addProp(&c.Properties, "aibom:source", "source-code-scan")
+	addProp(&c.Properties, "aibom:reference-count", fmt.Sprintf("%d", len(files)))
+	shown := files
+	if len(shown) > 10 {
+		shown = shown[:10]
+	}
+	usedIn := strings.Join(shown, ", ")
+	if len(files) > len(shown) {
+		usedIn += fmt.Sprintf(", (+%d more)", len(files)-len(shown))
+	}
+	addProp(&c.Properties, "aibom:used-in", usedIn)
+	return c
+}
+
+func slug(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	return b.String()
 }
 
 // ---------------------------------------------------------------------------
