@@ -6,11 +6,11 @@ Docker Model Runner, and emits it as a CycloneDX **AI-BOM**.
 A traditional SBOM inventories software packages and dependencies. An AI-BOM
 inventories the **AI components** those packages don't capture: models,
 frameworks, agents, and MCP servers. This is about **composition and inventory**
-— *what AI is in here?* — for provenance, licensing, and governance (e.g. EU AI
+- *what AI is in here?* - for provenance, licensing, and governance (e.g. EU AI
 Act evidence). It is **not** a vulnerability scanner.
 
-It surfaces components no one registered — models baked into an image, `agents.yaml`
-shipped inside a dependency, MCP servers declared in a config — that manual
+It surfaces components no one registered - models baked into an image, `agents.yaml`
+shipped inside a dependency, MCP servers declared in a config - that manual
 inventories miss.
 
 ## What it discovers
@@ -22,10 +22,11 @@ inventories miss.
 | **Frameworks** | AI libraries among the SBOM packages (`torch`, `transformers`, `langchain`, `crewai`, `openai`, `anthropic`, `mcp`, …) |
 | **Agents** | Agent configuration files (`crew.yaml`, `agents.yaml`, `langgraph.json`, …) |
 | **MCP servers** | Servers declared in `.mcp.json` / `claude_desktop_config.json` |
-| **Inference providers** | Hosted APIs signalled by declared env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OLLAMA_HOST`, …) — the remote model your code calls |
+| **Inference providers** | Hosted APIs signalled by declared env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OLLAMA_HOST`, …) - the remote model your code calls |
+| **Prompts** | System prompts and prompt templates (`system_prompt.txt`, `*.prompt`, `*.jinja`, files under `prompts/`) |
 
 Every component is tagged with an `aibom:category` property. Provider detection
-records only the env var **name** and any endpoint URL — never the secret value.
+records only the env var **name** and any endpoint URL - never the secret value.
 
 ## Build
 
@@ -41,7 +42,7 @@ Two modes. Flags come before positional arguments.
 # AI composition of a container image (Docker Scout SBOM + AI discovery)
 ./aibom-scout image -o aibom.cdx.json myorg/my-app:latest
 
-# Docker Model Runner artefacts — all local models, or a single one
+# Docker Model Runner artefacts - all local models, or a single one
 ./aibom-scout model -o models.cdx.json
 ./aibom-scout model -o smollm2.cdx.json smollm2
 ```
@@ -55,7 +56,7 @@ Two modes. Flags come before positional arguments.
 
 ```
 $ ./aibom-scout image myorg/my-app:latest
-AI-BOM: 6 models, 5 datasets, 8 frameworks, 3 agents, 2 MCP servers, 2 providers
+AI-BOM: 6 models, 5 datasets, 8 frameworks, 3 agents, 2 MCP servers, 2 providers, 4 prompts
 ```
 
 Docker Model Runner models become CycloneDX `machine-learning-model` components

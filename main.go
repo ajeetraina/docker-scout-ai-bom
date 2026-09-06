@@ -2,7 +2,7 @@
 // the models managed by Docker Model Runner, and emits it as a CycloneDX AI-BOM.
 //
 // This is about COMPOSITION, not vulnerabilities: an AI-BOM answers "what AI is
-// in here?" — models, frameworks, agents, and MCP servers — for inventory,
+// in here?" - models, frameworks, agents, and MCP servers - for inventory,
 // provenance, licensing, and governance. It is not a CVE scanner.
 //
 // Two modes:
@@ -13,15 +13,16 @@
 // The image mode uses `docker scout sbom` as the software baseline, then
 // discovers AI components the SBOM misses:
 //
-//   - models    — weight files baked into the image (.gguf, .safetensors, …)
-//   - datasets  — dataset files (.parquet, .arrow, …)
-//   - frameworks — AI libraries among the SBOM packages (torch, langchain, …)
-//   - agents    — agent configuration files (crew.yaml, langgraph.json, …)
-//   - mcp       — MCP servers declared in config files (.mcp.json, …)
-//   - providers — hosted inference providers signalled by env vars (OpenAI, …)
+//   - models    - weight files baked into the image (.gguf, .safetensors, …)
+//   - datasets  - dataset files (.parquet, .arrow, …)
+//   - frameworks - AI libraries among the SBOM packages (torch, langchain, …)
+//   - agents    - agent configuration files (crew.yaml, langgraph.json, …)
+//   - mcp       - MCP servers declared in config files (.mcp.json, …)
+//   - providers - hosted inference providers signalled by env vars (OpenAI, …)
+//   - prompts   - system prompts and prompt templates (system_prompt.txt, …)
 //
 // The model mode inspects Docker Model Runner artefacts (`docker model
-// inspect` / `list --json`) — GGUF models distributed as OCI artefacts, not
+// inspect` / `list --json`) - GGUF models distributed as OCI artefacts, not
 // container images.
 package main
 
@@ -50,6 +51,7 @@ const (
 	catAgent     = "agent-config"
 	catMCP       = "mcp-server"
 	catProvider  = "inference-provider"
+	catPrompt    = "prompt"
 )
 
 func main() {
@@ -242,13 +244,16 @@ func scanImage(image string, maxHash int64) ([]cdx.Component, error) {
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-		base := strings.ToLower(path.Base(hdr.Name))
+		nameLower := strings.ToLower(hdr.Name)
+		base := path.Base(nameLower)
 		switch {
 		case isMCPConfig(base):
 			data := readCapped(tr, 1<<20)
 			comps = append(comps, mcpComponents(hdr.Name, data)...)
 		case isAgentConfig(base):
 			comps = append(comps, agentComponent(hdr.Name))
+		case isPromptFile(nameLower, base):
+			comps = append(comps, promptComponent(hdr.Name, hdr.Size))
 		default:
 			kind, cat, ok := classifyWeight(base)
 			if !ok {
@@ -340,6 +345,51 @@ func agentComponent(name string) cdx.Component {
 	return c
 }
 
+// --- system prompts / prompt templates ---
+
+// promptExts are template/prompt file extensions treated as prompt artefacts,
+// both on their own and inside a prompts/ directory.
+var promptExts = map[string]bool{
+	".prompt": true, ".jinja": true, ".j2": true, ".tmpl": true,
+}
+
+// promptDirExts are text extensions counted as prompts only when they live
+// under a prompts/ directory (keeps the heuristic high-signal).
+var promptDirExts = map[string]bool{
+	".txt": true, ".md": true, ".yaml": true, ".yml": true, ".json": true,
+}
+
+// isPromptFile reports whether a path looks like a system prompt or prompt
+// template. name is the lowercased full path, base its lowercased basename.
+func isPromptFile(name, base string) bool {
+	ext := path.Ext(base)
+	switch {
+	case promptExts[ext]:
+		return true
+	case strings.HasPrefix(base, "system_prompt") || strings.HasPrefix(base, "system-prompt"):
+		return true
+	case base == "system.prompt" || base == "prompt.txt" || base == "prompt_template.txt",
+		base == "prompts.yaml" || base == "prompts.yml" || base == "prompts.json":
+		return true
+	case strings.Contains(name, "/prompts/") && promptDirExts[ext]:
+		return true
+	}
+	return false
+}
+
+func promptComponent(name string, size int64) cdx.Component {
+	c := cdx.Component{
+		Type:   cdx.ComponentTypeData,
+		Name:   path.Base(name),
+		BOMRef: "aibom:prompt:" + strings.ReplaceAll(name, "/", "_"),
+	}
+	addProp(&c.Properties, "aibom:category", catPrompt)
+	addProp(&c.Properties, "aibom:source", "image-filesystem-scan")
+	addProp(&c.Properties, "aibom:path", "/"+name)
+	addProp(&c.Properties, "aibom:size-bytes", fmt.Sprintf("%d", size))
+	return c
+}
+
 // --- MCP server declarations ---
 
 func isMCPConfig(base string) bool {
@@ -397,7 +447,7 @@ func mcpComponents(name string, data []byte) []cdx.Component {
 
 // providerEnv maps an environment variable name to the hosted inference
 // provider it signals. The variable's *value* (often a secret) is never read
-// or emitted — only its presence matters.
+// or emitted - only its presence matters.
 var providerEnv = map[string]string{
 	"OPENAI_API_KEY": "OpenAI", "OPENAI_API_BASE": "OpenAI", "OPENAI_BASE_URL": "OpenAI",
 	"AZURE_OPENAI_API_KEY": "Azure OpenAI", "AZURE_OPENAI_ENDPOINT": "Azure OpenAI",
@@ -631,7 +681,7 @@ func annotate(bom *cdx.BOM, counts map[string]int) {
 		bom.Metadata = &cdx.Metadata{}
 	}
 	props := []cdx.Property{{Name: "aibom:generator", Value: "aibom-scout"}}
-	for _, cat := range []string{catModel, catDataset, catFramework, catAgent, catMCP, catProvider} {
+	for _, cat := range []string{catModel, catDataset, catFramework, catAgent, catMCP, catProvider, catPrompt} {
 		if counts[cat] > 0 {
 			props = append(props, cdx.Property{Name: "aibom:" + cat + "-count", Value: fmt.Sprintf("%d", counts[cat])})
 		}
@@ -660,8 +710,8 @@ func writeBOM(bom *cdx.BOM, out string) {
 }
 
 func reportCounts(counts map[string]int) {
-	fmt.Fprintf(os.Stderr, "AI-BOM: %d models, %d datasets, %d frameworks, %d agents, %d MCP servers, %d providers\n",
-		counts[catModel], counts[catDataset], counts[catFramework], counts[catAgent], counts[catMCP], counts[catProvider])
+	fmt.Fprintf(os.Stderr, "AI-BOM: %d models, %d datasets, %d frameworks, %d agents, %d MCP servers, %d providers, %d prompts\n",
+		counts[catModel], counts[catDataset], counts[catFramework], counts[catAgent], counts[catMCP], counts[catProvider], counts[catPrompt])
 }
 
 func fatalf(format string, a ...any) {
