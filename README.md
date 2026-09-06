@@ -13,6 +13,16 @@ It surfaces components no one registered - models baked into an image, `agents.y
 shipped inside a dependency, MCP servers declared in a config - that manual
 inventories miss.
 
+## Modes
+
+Three complementary views. Run all three for full coverage of an AI system.
+
+| Mode | Answers | Looks at |
+|------|---------|----------|
+| `image` | What AI is inside this container? | Docker Scout SBOM + image filesystem + env |
+| `model` | What models does Docker Model Runner hold? | `docker model inspect` / `list` |
+| `source` | What AI does my code call? | Source imports + model references in a repo |
+
 ## What it discovers
 
 | Category | Source |
