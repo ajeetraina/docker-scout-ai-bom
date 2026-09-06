@@ -18,6 +18,7 @@
 //   - frameworks — AI libraries among the SBOM packages (torch, langchain, …)
 //   - agents    — agent configuration files (crew.yaml, langgraph.json, …)
 //   - mcp       — MCP servers declared in config files (.mcp.json, …)
+//   - providers — hosted inference providers signalled by env vars (OpenAI, …)
 //
 // The model mode inspects Docker Model Runner artefacts (`docker model
 // inspect` / `list --json`) — GGUF models distributed as OCI artefacts, not
@@ -48,6 +49,7 @@ const (
 	catFramework = "framework"
 	catAgent     = "agent-config"
 	catMCP       = "mcp-server"
+	catProvider  = "inference-provider"
 )
 
 func main() {
@@ -97,8 +99,14 @@ func runImage(argv []string) {
 	if err != nil {
 		fatalf("scan image: %v", err)
 	}
-
 	comps = append(comps, found...)
+
+	// Detect hosted inference providers from the image's declared env vars.
+	providers, err := detectProviders(image)
+	if err != nil {
+		fatalf("inspect image env: %v", err)
+	}
+	comps = append(comps, providers...)
 	bom.Components = &comps
 	counts := countCategories(comps)
 	counts[catFramework] = frameworks
@@ -384,6 +392,105 @@ func mcpComponents(name string, data []byte) []cdx.Component {
 }
 
 // ---------------------------------------------------------------------------
+// Hosted inference providers (remote models called by the image)
+// ---------------------------------------------------------------------------
+
+// providerEnv maps an environment variable name to the hosted inference
+// provider it signals. The variable's *value* (often a secret) is never read
+// or emitted — only its presence matters.
+var providerEnv = map[string]string{
+	"OPENAI_API_KEY": "OpenAI", "OPENAI_API_BASE": "OpenAI", "OPENAI_BASE_URL": "OpenAI",
+	"AZURE_OPENAI_API_KEY": "Azure OpenAI", "AZURE_OPENAI_ENDPOINT": "Azure OpenAI",
+	"ANTHROPIC_API_KEY": "Anthropic",
+	"CO_API_KEY":        "Cohere", "COHERE_API_KEY": "Cohere",
+	"GOOGLE_API_KEY": "Google Gemini", "GEMINI_API_KEY": "Google Gemini",
+	"MISTRAL_API_KEY":          "Mistral",
+	"GROQ_API_KEY":             "Groq",
+	"TOGETHER_API_KEY":         "Together AI",
+	"FIREWORKS_API_KEY":        "Fireworks AI",
+	"REPLICATE_API_TOKEN":      "Replicate",
+	"HUGGINGFACEHUB_API_TOKEN": "Hugging Face", "HF_TOKEN": "Hugging Face",
+	"PERPLEXITY_API_KEY": "Perplexity",
+	"DEEPSEEK_API_KEY":   "DeepSeek",
+	"XAI_API_KEY":        "xAI",
+	"DASHSCOPE_API_KEY":  "Alibaba DashScope",
+	"OLLAMA_HOST":        "Ollama",
+}
+
+// endpointEnv names env vars whose value is a (non-secret) endpoint URL worth
+// recording against the provider.
+var endpointEnv = map[string]bool{
+	"OPENAI_API_BASE": true, "OPENAI_BASE_URL": true,
+	"AZURE_OPENAI_ENDPOINT": true, "OLLAMA_HOST": true,
+}
+
+// detectProviders inspects the image's declared env vars and emits one
+// component per hosted inference provider it finds.
+func detectProviders(image string) ([]cdx.Component, error) {
+	env, err := imageEnv(image)
+	if err != nil {
+		return nil, err
+	}
+	type acc struct {
+		keys     []string
+		endpoint string
+	}
+	found := map[string]*acc{}
+	for _, kv := range env {
+		key, val, _ := strings.Cut(kv, "=")
+		provider, ok := providerEnv[key]
+		if !ok {
+			continue
+		}
+		a := found[provider]
+		if a == nil {
+			a = &acc{}
+			found[provider] = a
+		}
+		a.keys = append(a.keys, key)
+		if endpointEnv[key] && val != "" {
+			a.endpoint = val
+		}
+	}
+
+	providers := make([]string, 0, len(found))
+	for p := range found {
+		providers = append(providers, p)
+	}
+	sort.Strings(providers)
+
+	var comps []cdx.Component
+	for _, p := range providers {
+		a := found[p]
+		sort.Strings(a.keys)
+		c := cdx.Component{
+			Type:   cdx.ComponentTypeApplication,
+			Name:   p,
+			BOMRef: "aibom:provider:" + strings.ToLower(strings.ReplaceAll(p, " ", "-")),
+		}
+		addProp(&c.Properties, "aibom:category", catProvider)
+		addProp(&c.Properties, "aibom:source", "image-env")
+		addProp(&c.Properties, "aibom:env", strings.Join(a.keys, ", "))
+		addProp(&c.Properties, "aibom:endpoint", a.endpoint)
+		comps = append(comps, c)
+	}
+	return comps, nil
+}
+
+// imageEnv returns the image's declared environment variables (KEY=VALUE).
+func imageEnv(image string) ([]string, error) {
+	out, err := exec.Command("docker", "image", "inspect", "--format", "{{json .Config.Env}}", image).Output()
+	if err != nil {
+		return nil, err
+	}
+	var env []string
+	if err := json.Unmarshal(out, &env); err != nil {
+		return nil, fmt.Errorf("decode env: %w", err)
+	}
+	return env, nil
+}
+
+// ---------------------------------------------------------------------------
 // Docker Model Runner artefacts
 // ---------------------------------------------------------------------------
 
@@ -524,7 +631,7 @@ func annotate(bom *cdx.BOM, counts map[string]int) {
 		bom.Metadata = &cdx.Metadata{}
 	}
 	props := []cdx.Property{{Name: "aibom:generator", Value: "aibom-scout"}}
-	for _, cat := range []string{catModel, catDataset, catFramework, catAgent, catMCP} {
+	for _, cat := range []string{catModel, catDataset, catFramework, catAgent, catMCP, catProvider} {
 		if counts[cat] > 0 {
 			props = append(props, cdx.Property{Name: "aibom:" + cat + "-count", Value: fmt.Sprintf("%d", counts[cat])})
 		}
@@ -553,8 +660,8 @@ func writeBOM(bom *cdx.BOM, out string) {
 }
 
 func reportCounts(counts map[string]int) {
-	fmt.Fprintf(os.Stderr, "AI-BOM: %d models, %d datasets, %d frameworks, %d agents, %d MCP servers\n",
-		counts[catModel], counts[catDataset], counts[catFramework], counts[catAgent], counts[catMCP])
+	fmt.Fprintf(os.Stderr, "AI-BOM: %d models, %d datasets, %d frameworks, %d agents, %d MCP servers, %d providers\n",
+		counts[catModel], counts[catDataset], counts[catFramework], counts[catAgent], counts[catMCP], counts[catProvider])
 }
 
 func fatalf(format string, a ...any) {

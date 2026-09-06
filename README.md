@@ -22,8 +22,10 @@ inventories miss.
 | **Frameworks** | AI libraries among the SBOM packages (`torch`, `transformers`, `langchain`, `crewai`, `openai`, `anthropic`, `mcp`, …) |
 | **Agents** | Agent configuration files (`crew.yaml`, `agents.yaml`, `langgraph.json`, …) |
 | **MCP servers** | Servers declared in `.mcp.json` / `claude_desktop_config.json` |
+| **Inference providers** | Hosted APIs signalled by declared env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OLLAMA_HOST`, …) — the remote model your code calls |
 
-Every component is tagged with an `aibom:category` property.
+Every component is tagged with an `aibom:category` property. Provider detection
+records only the env var **name** and any endpoint URL — never the secret value.
 
 ## Build
 
@@ -53,7 +55,7 @@ Two modes. Flags come before positional arguments.
 
 ```
 $ ./aibom-scout image myorg/my-app:latest
-AI-BOM: 6 models, 5 datasets, 8 frameworks, 3 agents, 2 MCP servers
+AI-BOM: 6 models, 5 datasets, 8 frameworks, 3 agents, 2 MCP servers, 2 providers
 ```
 
 Docker Model Runner models become CycloneDX `machine-learning-model` components
